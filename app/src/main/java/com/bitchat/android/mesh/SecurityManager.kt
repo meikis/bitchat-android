@@ -19,10 +19,10 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
     
     companion object {
         private const val TAG = "SecurityManager"
-        private const val MESSAGE_TIMEOUT = 300000L // 5 minutes (same as iOS)
-        private const val CLEANUP_INTERVAL = 300000L // 5 minutes
-        private const val MAX_PROCESSED_MESSAGES = 10000
-        private const val MAX_PROCESSED_KEY_EXCHANGES = 1000
+        private const val MESSAGE_TIMEOUT = com.bitchat.android.util.AppConstants.Security.MESSAGE_TIMEOUT_MS // 5 minutes (same as iOS)
+        private const val CLEANUP_INTERVAL = com.bitchat.android.util.AppConstants.Security.CLEANUP_INTERVAL_MS // 5 minutes
+        private const val MAX_PROCESSED_MESSAGES = com.bitchat.android.util.AppConstants.Security.MAX_PROCESSED_MESSAGES
+        private const val MAX_PROCESSED_KEY_EXCHANGES = com.bitchat.android.util.AppConstants.Security.MAX_PROCESSED_KEY_EXCHANGES
     }
     
     // Security tracking
@@ -50,12 +50,6 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             return false
         }
         
-        // TTL check
-        if (packet.ttl == 0u.toUByte()) {
-            Log.d(TAG, "Dropping packet with TTL 0")
-            return false
-        }
-        
         // Validate packet payload
         if (packet.payload.isEmpty()) {
             Log.d(TAG, "Dropping packet with empty payload")
@@ -67,11 +61,11 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         val packetTime = packet.timestamp.toLong()
         val timeDiff = kotlin.math.abs(currentTime - packetTime)
         
-        if (timeDiff > MESSAGE_TIMEOUT) {
-            Log.d(TAG, "Dropping old packet from $peerID, time diff: ${timeDiff/1000}s")
-            return false
-        }
-        
+//        if (timeDiff > MESSAGE_TIMEOUT) {
+//            Log.d(TAG, "Dropping old packet from $peerID, time diff: ${timeDiff/1000}s")
+//            return false
+//        }
+
         // Duplicate detection
         val messageID = generateMessageID(packet, peerID)
         if (processedMessages.contains(messageID)) {
@@ -107,9 +101,17 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         // Skip our own handshake messages
         if (peerID == myPeerID) return false
 
+        // If we already have an established session but the peer is initiating a new handshake,
+        // drop the existing session so we can re-establish cleanly.
+        var forcedRehandshake = false
         if (encryptionService.hasEstablishedSession(peerID)) {
-            Log.d(TAG, "Handshake already completed with $peerID")
-            return true
+            Log.d(TAG, "Received new Noise handshake from $peerID with an existing session. Dropping old session to re-handshake.")
+            try {
+                encryptionService.removePeer(peerID)
+                forcedRehandshake = true
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to remove existing Noise session for $peerID: ${e.message}")
+            }
         }
         
         if (packet.payload.isEmpty()) {
@@ -120,7 +122,7 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         // Prevent duplicate handshake processing
         val exchangeKey = "$peerID-${packet.payload.sliceArray(0 until minOf(16, packet.payload.size)).contentHashCode()}"
         
-        if (processedKeyExchanges.contains(exchangeKey)) {
+        if (!forcedRehandshake && processedKeyExchanges.contains(exchangeKey)) {
             Log.d(TAG, "Already processed handshake: $exchangeKey")
             return false
         }

@@ -3,7 +3,6 @@ package com.bitchat.android
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,7 +14,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.repeatOnLifecycle
@@ -25,6 +23,7 @@ import com.bitchat.android.onboarding.BluetoothCheckScreen
 import com.bitchat.android.onboarding.BluetoothStatus
 import com.bitchat.android.onboarding.BluetoothStatusManager
 import com.bitchat.android.onboarding.BatteryOptimizationManager
+import com.bitchat.android.onboarding.BatteryOptimizationPreferenceManager
 import com.bitchat.android.onboarding.BatteryOptimizationScreen
 import com.bitchat.android.onboarding.BatteryOptimizationStatus
 import com.bitchat.android.onboarding.InitializationErrorScreen
@@ -38,13 +37,14 @@ import com.bitchat.android.onboarding.PermissionExplanationScreen
 import com.bitchat.android.onboarding.PermissionManager
 import com.bitchat.android.ui.ChatScreen
 import com.bitchat.android.ui.ChatViewModel
+import com.bitchat.android.ui.OrientationAwareActivity
 import com.bitchat.android.ui.theme.BitchatTheme
 import com.bitchat.android.nostr.PoWPreferenceManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
-    
+class MainActivity : OrientationAwareActivity() {
+
     private lateinit var permissionManager: PermissionManager
     private lateinit var onboardingCoordinator: OnboardingCoordinator
     private lateinit var bluetoothStatusManager: BluetoothStatusManager
@@ -163,7 +163,7 @@ class MainActivity : ComponentActivity() {
         }
 
         when (onboardingState) {
-            OnboardingState.CHECKING -> {
+            OnboardingState.PERMISSION_REQUESTING -> {
                 InitializingScreen(modifier)
             }
             
@@ -226,16 +226,8 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
-            
-            OnboardingState.PERMISSION_REQUESTING -> {
-                InitializingScreen(modifier)
-            }
-            
-            OnboardingState.INITIALIZING -> {
-                InitializingScreen(modifier)
-            }
-            
-            OnboardingState.COMPLETE -> {
+
+            OnboardingState.CHECKING, OnboardingState.INITIALIZING, OnboardingState.COMPLETE -> {
                 // Set up back navigation handling for the chat screen
                 val backCallback = object : OnBackPressedCallback(true) {
                     override fun handleOnBackPressed() {
@@ -533,6 +525,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         
+        // Check if user has previously skipped battery optimization
+        if (BatteryOptimizationPreferenceManager.isSkipped(this)) {
+            android.util.Log.d("MainActivity", "User previously skipped battery optimization, proceeding to permissions")
+            proceedWithPermissionCheck()
+            return
+        }
+        
         // For existing users, check battery optimization status
         batteryOptimizationManager.logBatteryOptimizationStatus()
         val currentBatteryOptimizationStatus = when {
@@ -597,6 +596,9 @@ class MainActivity : ComponentActivity() {
                 // Initialize PoW preferences early in the initialization process
                 PoWPreferenceManager.init(this@MainActivity)
                 Log.d("MainActivity", "PoW preferences initialized")
+                
+                // Initialize Location Notes Manager (extracted to separate file)
+                com.bitchat.android.nostr.LocationNotesInitializer.initialize(this@MainActivity)
                 
                 // Ensure all permissions are still granted (user might have revoked in settings)
                 if (!permissionManager.areAllPermissionsGranted()) {

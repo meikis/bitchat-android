@@ -22,10 +22,10 @@ class FragmentManager {
     companion object {
         private const val TAG = "FragmentManager"
         // iOS values: 512 MTU threshold, 469 max fragment size (512 MTU - headers)
-        private const val FRAGMENT_SIZE_THRESHOLD = 512 // Matches iOS: if data.count > 512
-        private const val MAX_FRAGMENT_SIZE = 469        // Matches iOS: maxFragmentSize = 469 
-        private const val FRAGMENT_TIMEOUT = 30000L     // Matches iOS: 30 seconds cleanup
-        private const val CLEANUP_INTERVAL = 10000L     // 10 seconds cleanup check
+        private const val FRAGMENT_SIZE_THRESHOLD = com.bitchat.android.util.AppConstants.Fragmentation.FRAGMENT_SIZE_THRESHOLD // Matches iOS: if data.count > 512
+        private const val MAX_FRAGMENT_SIZE = com.bitchat.android.util.AppConstants.Fragmentation.MAX_FRAGMENT_SIZE        // Matches iOS: maxFragmentSize = 469 
+        private const val FRAGMENT_TIMEOUT = com.bitchat.android.util.AppConstants.Fragmentation.FRAGMENT_TIMEOUT_MS     // Matches iOS: 30 seconds cleanup
+        private const val CLEANUP_INTERVAL = com.bitchat.android.util.AppConstants.Fragmentation.CLEANUP_INTERVAL_MS     // 10 seconds cleanup check
     }
     
     // Fragment storage - iOS equivalent: incomingFragments: [String: [Int: Data]]
@@ -48,10 +48,23 @@ class FragmentManager {
      * Matches iOS sendFragmentedPacket() implementation exactly
      */
     fun createFragments(packet: BitchatPacket): List<BitchatPacket> {
-        val encoded = packet.toBinaryData() ?: return emptyList()
+        try {
+            Log.d(TAG, "🔀 Creating fragments for packet type ${packet.type}, payload: ${packet.payload.size} bytes")
+        val encoded = packet.toBinaryData()
+            if (encoded == null) {
+                Log.e(TAG, "❌ Failed to encode packet to binary data")
+                return emptyList()
+            }
+            Log.d(TAG, "📦 Encoded to ${encoded.size} bytes")
         
         // Fragment the unpadded frame; each fragment will be encoded (and padded) independently - iOS fix
-        val fullData = MessagePadding.unpad(encoded)
+        val fullData = try {
+                MessagePadding.unpad(encoded)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to unpad data: ${e.message}", e)
+                return emptyList()
+            }
+            Log.d(TAG, "📏 Unpadded to ${fullData.size} bytes")
         
         // iOS logic: if data.count > 512 && packet.type != MessageType.fragment.rawValue
         if (fullData.size <= FRAGMENT_SIZE_THRESHOLD) {
@@ -98,7 +111,13 @@ class FragmentManager {
             fragments.add(fragmentPacket)
         }
         
-        return fragments
+        Log.d(TAG, "✅ Created ${fragments.size} fragments successfully")
+            return fragments
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Fragment creation failed: ${e.message}", e)
+            Log.e(TAG, "❌ Packet type: ${packet.type}, payload: ${packet.payload.size} bytes")
+            return emptyList()
+        }
     }
     
     /**
@@ -161,8 +180,12 @@ class FragmentManager {
                     incomingFragments.remove(fragmentIDString)
                     fragmentMetadata.remove(fragmentIDString)
                     
-                    Log.d(TAG, "Successfully reassembled and decoded original packet of ${reassembledData.size} bytes")
-                    return originalPacket
+                    // Suppress re-broadcast of the reassembled packet by zeroing TTL.
+                    // We already relayed the incoming fragments; setting TTL=0 ensures
+                    // PacketRelayManager will skip relaying this reconstructed packet.
+                    val suppressedTtlPacket = originalPacket.copy(ttl = 0u.toUByte())
+                    Log.d(TAG, "Successfully reassembled original (${reassembledData.size} bytes); set TTL=0 to suppress relay")
+                    return suppressedTtlPacket
                 } else {
                     val metadata = fragmentMetadata[fragmentIDString]
                     Log.e(TAG, "Failed to decode reassembled packet (type=${metadata?.first}, total=${metadata?.second})")

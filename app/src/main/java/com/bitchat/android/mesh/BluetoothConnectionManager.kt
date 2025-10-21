@@ -29,7 +29,7 @@ class BluetoothConnectionManager(
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     
     // Power management
-    private val powerManager = PowerManager(context)
+    private val powerManager = PowerManager(context.applicationContext)
     
     // Coroutines
     private val connectionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -243,6 +243,23 @@ class BluetoothConnectionManager(
         
         packetBroadcaster.broadcastPacket(
             routed,
+            serverManager.getGattServer(),
+            serverManager.getCharacteristic()
+        )
+    }
+
+    fun cancelTransfer(transferId: String): Boolean {
+        return packetBroadcaster.cancelTransfer(transferId)
+    }
+
+    /**
+     * Send a packet directly to a specific peer, without broadcasting to others.
+     */
+    fun sendPacketToPeer(peerID: String, packet: BitchatPacket): Boolean {
+        if (!isActive) return false
+        return packetBroadcaster.sendPacketToPeer(
+            RoutedPacket(packet),
+            peerID,
             serverManager.getGattServer(),
             serverManager.getCharacteristic()
         )

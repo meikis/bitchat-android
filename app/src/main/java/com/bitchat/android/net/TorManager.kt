@@ -29,11 +29,11 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object TorManager {
     private const val TAG = "TorManager"
-    private const val DEFAULT_SOCKS_PORT = 9060
-    private const val RESTART_DELAY_MS = 2000L // 2 seconds between stop/start
-    private const val INACTIVITY_TIMEOUT_MS = 5000L // 5 seconds of no activity before restart
-    private const val MAX_RETRY_ATTEMPTS = 5
-    private const val STOP_TIMEOUT_MS = 7000L
+    private const val DEFAULT_SOCKS_PORT = com.bitchat.android.util.AppConstants.Tor.DEFAULT_SOCKS_PORT
+    private const val RESTART_DELAY_MS = com.bitchat.android.util.AppConstants.Tor.RESTART_DELAY_MS // 2 seconds between stop/start
+    private const val INACTIVITY_TIMEOUT_MS = com.bitchat.android.util.AppConstants.Tor.INACTIVITY_TIMEOUT_MS // 5 seconds of no activity before restart
+    private const val MAX_RETRY_ATTEMPTS = com.bitchat.android.util.AppConstants.Tor.MAX_RETRY_ATTEMPTS
+    private const val STOP_TIMEOUT_MS = com.bitchat.android.util.AppConstants.Tor.STOP_TIMEOUT_MS
 
     private val appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -82,9 +82,18 @@ object TorManager {
             currentApplication = application
             TorPreferenceManager.init(application)
 
-            // Apply saved mode at startup
+            // Apply saved mode at startup. If ON, set planned SOCKS immediately to avoid any leak.
+            val savedMode = TorPreferenceManager.get(application)
+            if (savedMode == TorMode.ON) {
+                if (currentSocksPort < DEFAULT_SOCKS_PORT) {
+                    currentSocksPort = DEFAULT_SOCKS_PORT
+                }
+                desiredMode = savedMode
+                socksAddr = InetSocketAddress("127.0.0.1", currentSocksPort)
+                try { OkHttpProvider.reset() } catch (_: Throwable) { }
+            }
             appScope.launch {
-                applyMode(application, TorPreferenceManager.get(application))
+                applyMode(application, savedMode)
             }
 
             // Observe changes
@@ -136,6 +145,11 @@ object TorManager {
                         bindRetryAttempts = 0
                         lifecycleState = LifecycleState.STARTING
                         _status.value = _status.value.copy(mode = TorMode.ON, running = false, bootstrapPercent = 0, state = TorState.STARTING)
+                        // Immediately set the planned SOCKS address so all traffic is forced through it,
+                        // even before Tor is fully bootstrapped. This prevents any direct connections.
+                        socksAddr = InetSocketAddress("127.0.0.1", currentSocksPort)
+                        try { OkHttpProvider.reset() } catch (_: Throwable) { }
+                        try { com.bitchat.android.nostr.NostrRelayManager.shared.resetAllConnections() } catch (_: Throwable) { }
                         startArti(application, useDelay = false)
                         // Defer enabling proxy until bootstrap completes
                         appScope.launch {
@@ -188,6 +202,8 @@ object TorManager {
             lifecycleState = LifecycleState.RUNNING
             startInactivityMonitoring()
 
+            // Removed onion service startup (BLE-only file transfer in this branch)
+
         } catch (e: Exception) {
             Log.e(TAG, "Error starting Arti on port $currentSocksPort: ${e.message}")
             _status.value = _status.value.copy(state = TorState.ERROR)
@@ -198,6 +214,10 @@ object TorManager {
                 bindRetryAttempts++
                 currentSocksPort++
                 Log.w(TAG, "Port bind failed (attempt $bindRetryAttempts/$MAX_RETRY_ATTEMPTS), retrying with port $currentSocksPort")
+                // Update planned SOCKS address immediately so all new connections target the new port
+                socksAddr = InetSocketAddress("127.0.0.1", currentSocksPort)
+                try { OkHttpProvider.reset() } catch (_: Throwable) { }
+                try { com.bitchat.android.nostr.NostrRelayManager.shared.resetAllConnections() } catch (_: Throwable) { }
                 // Immediate retry with incremented port, no exponential backoff for bind errors
                 startArti(application, useDelay = false)
             } else if (isBindError) {
@@ -339,7 +359,7 @@ object TorManager {
                 completeWaitersIf(TorState.STARTING)
             }
             s.contains("Sufficiently bootstrapped; system SOCKS now functional", ignoreCase = true) -> {
-                _status.value = _status.value.copy(bootstrapPercent = 100, state = TorState.BOOTSTRAPPING)
+                _status.value = _status.value.copy(bootstrapPercent = 75, state = TorState.BOOTSTRAPPING)
                 retryAttempts = 0
                 bindRetryAttempts = 0
                 startInactivityMonitoring()
